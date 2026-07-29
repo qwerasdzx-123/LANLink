@@ -14,7 +14,7 @@
 
 **LANLink** is a serverless LAN peer-to-peer messenger & file transfer tool — auto-discover peers, chat, and share files at full local-network speed, all end-to-end encrypted.
 
-[📥 下载](#quick-start) · [🚀 快速开始](#quick-start) · [🔐 安全机制](#security) · [📁 项目结构](#structure) · [𝕏 @kalaspace002](https://x.com/kalaspace002)
+[📥 下载](https://github.com/qwerasdzx-123/LANLink/releases) · [🚀 快速开始](#quick-start) · [🔐 安全机制](#security) · [📁 项目结构](#structure) · [𝕏 @kalaspace002](https://x.com/kalaspace002)
 
 </div>
 
