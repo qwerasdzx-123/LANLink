@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="./cmd/lanlink-gui/assets/icon.png" alt="LANLink" width="160">
+
 # 🔗 LANLink · 内网通联工具
 
 ### 局域网点对点即时通讯与文件传输 — 无需服务器，开箱即用
@@ -7,12 +9,12 @@
 [![Go](https://img.shields.io/badge/Go-1.22-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)](https://www.microsoft.com)
 [![GUI](https://img.shields.io/badge/GUI-Fyne%20v2.8-41b883?logo=go&logoColor=white)](https://fyne.io)
-[![Encryption](https://img.shields.io/badge/Encryption-AES--256--GCM-blue)](#-安全机制-security)
+[![Encryption](https://img.shields.io/badge/Encryption-AES--256--GCM-blue)](#security)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
 **LANLink** is a serverless LAN peer-to-peer messenger & file transfer tool — auto-discover peers, chat, and share files at full local-network speed, all end-to-end encrypted.
 
-[📥 下载](#-快速开始-quick-start) · [🚀 快速开始](#-快速开始-quick-start) · [🔐 安全机制](#-安全机制-security) · [📁 项目结构](#-项目结构-project-structure) · [𝕏 @kalaspace002](https://x.com/kalaspace002)
+[📥 下载](#quick-start) · [🚀 快速开始](#quick-start) · [🔐 安全机制](#security) · [📁 项目结构](#structure) · [𝕏 @kalaspace002](https://x.com/kalaspace002)
 
 </div>
 
@@ -65,6 +67,8 @@
 
 ---
 
+<a id="quick-start"></a>
+
 ## 🚀 快速开始 · Quick Start
 
 ### 方式一：直接运行（推荐）
@@ -78,7 +82,7 @@
 ### 方式二：从源码构建
 ```bash
 # 克隆仓库
-git clone https://github.com/<你的用户名>/lanlink.git
+git clone https://github.com/qwerasdzx-123/LANLink.git
 cd lanlink
 
 # 构建 GUI 版（Windows，无控制台窗口）
@@ -105,6 +109,8 @@ lanlink-gui.exe -name Alice
 ```
 
 ---
+
+<a id="structure"></a>
 
 ## 🗂️ 项目结构 · Project Structure
 
@@ -134,6 +140,8 @@ lanlink/
 **技术栈**：Go 1.22 · Fyne v2.8 · CBOR · X25519 / Ed25519 / AES-256-GCM · UDP + TCP
 
 ---
+
+<a id="security"></a>
 
 ## 🔐 安全机制 · Security
 
