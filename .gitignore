@@ -1,0 +1,15 @@
+# 可执行文件（用户要求不包含）
+*.exe
+
+# 运行时配置 / 日志（可能含本机路径、用户名等个人信息）
+gui_settings.json
+fd_*.log
+*.pem
+*.key
+
+# 运行时数据目录（含身份私钥）
+.lanlink/
+lanlink-data/
+
+# 编译缓存
+*.test
