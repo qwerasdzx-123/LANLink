@@ -59,6 +59,32 @@ type leftRow struct {
 	sub    string
 	online bool
 	isPeer bool
+	unread int
+}
+
+// peerPalette 在线用户头像的彩色调色板（按节点 ID 哈希取色，稳定不变）
+var peerPalette = []color.NRGBA{
+	{0x2E, 0x86, 0xDE, 0xFF}, // 蓝
+	{0xE7, 0x4C, 0x3C, 0xFF}, // 红
+	{0x27, 0xAE, 0x60, 0xFF}, // 绿
+	{0x8E, 0x44, 0xAD, 0xFF}, // 紫
+	{0xE6, 0x7E, 0x22, 0xFF}, // 橙
+	{0x16, 0xA0, 0x85, 0xFF}, // 青
+	{0xD9, 0x53, 0x8C, 0xFF}, // 粉
+	{0x2C, 0x82, 0xC9, 0xFF}, // 靛
+}
+
+var grayAvatar = color.NRGBA{0x9E, 0x9E, 0x9E, 0xFF}
+
+func peerColor(id string) color.NRGBA {
+	h := 0
+	for _, c := range id {
+		h = h*31 + int(c)
+	}
+	if h < 0 {
+		h = -h
+	}
+	return peerPalette[h%len(peerPalette)]
 }
 
 // msgItem 一条聊天消息
@@ -83,6 +109,10 @@ type gui struct {
 	convs    map[string][]msgItem
 	curKey   string
 	curTitle string
+	unread   map[string]int // 各会话未读条数
+	blinkOn  bool           // 未读红点闪烁开关（定时器翻转）
+	historyFile string      // 历史消息文件路径
+	histDirty   bool        // 内存会话有变更，需落盘
 
 	// 左栏
 	peersList *widget.List
@@ -144,12 +174,15 @@ func main() {
 	w.SetIcon(appIcon)
 
 	g := &gui{app: a, fa: fa, win: w, set: set, dataDir: *dataDir,
-		convs: make(map[string][]msgItem)}
+		convs: make(map[string][]msgItem), unread: make(map[string]int)}
+	g.historyFile = filepath.Join(*dataDir, historyFileName)
+	g.loadHistory() // 启动即恢复历史消息
 	g.build()
 	g.setupTray()
 	w.Resize(fyne.NewSize(1180, 760))
 	w.SetOnDropped(g.onDropped)
 	w.SetCloseIntercept(func() {
+		g.saveHistory() // 退出/最小化前确保历史落盘
 		if g.set.CloseToTray {
 			w.Hide()
 		} else {
@@ -212,9 +245,23 @@ func (g *gui) buildLeft() {
 			return len(g.leftRows)
 		},
 		func() fyne.CanvasObject {
-			title := widget.NewLabelWithStyle("模板", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
-			sub := widget.NewLabel("模板")
-			return container.NewVBox(title, sub)
+			// 头像：圆形底 + 首字母；在线彩色 / 离线灰色
+			circle := canvas.NewCircle(grayAvatar)
+			initial := canvas.NewText("?", color.White)
+			initial.TextStyle = fyne.TextStyle{Bold: true}
+			initial.TextSize = 15
+			sizer := canvas.NewRectangle(color.Transparent)
+			sizer.SetMinSize(fyne.NewSize(38, 38))
+			avatar := container.NewStack(sizer, circle, container.NewCenter(initial))
+
+			title := canvas.NewText("模板", theme.Color(theme.ColorNameForeground))
+			title.TextStyle = fyne.TextStyle{Bold: true}
+			title.TextSize = theme.TextSize()
+			sub := canvas.NewText("模板", grayAvatar)
+			sub.TextSize = theme.TextSize() - 3
+			info := container.NewVBox(title, sub)
+
+			return container.NewBorder(nil, nil, avatar, nil, container.NewPadded(info))
 		},
 		func(id widget.ListItemID, o fyne.CanvasObject) {
 			g.mu.Lock()
@@ -223,20 +270,72 @@ func (g *gui) buildLeft() {
 				return
 			}
 			r := g.leftRows[id]
+			blink := g.blinkOn
 			g.mu.Unlock()
-			box := o.(*fyne.Container)
-			title := box.Objects[0].(*widget.Label)
-			sub := box.Objects[1].(*widget.Label)
-			dot := ""
-			if r.isPeer {
-				if r.online {
-					dot = "🟢 "
-				} else {
-					dot = "⚪ "
+
+			border := o.(*fyne.Container)
+			var avatar, center *fyne.Container
+			for _, obj := range border.Objects {
+				if c, ok := obj.(*fyne.Container); ok {
+					if _, isStack := c.Objects[0].(*canvas.Rectangle); isStack && len(c.Objects) == 3 {
+						avatar = c
+					} else {
+						center = c
+					}
 				}
 			}
-			title.SetText(dot + r.title)
-			sub.SetText(r.sub)
+			if avatar == nil || center == nil {
+				return
+			}
+			circle := avatar.Objects[1].(*canvas.Circle)
+			initial := avatar.Objects[2].(*fyne.Container).Objects[0].(*canvas.Text)
+			info := center.Objects[0].(*fyne.Container)
+			title := info.Objects[0].(*canvas.Text)
+			sub := info.Objects[1].(*canvas.Text)
+
+			// 头像颜色与首字符
+			name := r.title
+			switch {
+			case r.key == broadcastKey:
+				circle.FillColor = color.NRGBA{0xF3, 0x9C, 0x12, 0xFF}
+				initial.Text = "广"
+			case strings.HasPrefix(r.key, groupPrefix):
+				circle.FillColor = color.NRGBA{0x34, 0x98, 0xDB, 0xFF}
+				initial.Text = "群"
+			case r.isPeer && r.online:
+				circle.FillColor = peerColor(r.key)
+				initial.Text = firstRune(name)
+			default: // 离线用户
+				circle.FillColor = grayAvatar
+				initial.Text = firstRune(name)
+			}
+
+			// 昵称颜色：在线/频道用前景色（彩色头像已区分），离线灰色
+			if r.isPeer && !r.online {
+				title.Color = grayAvatar
+			} else {
+				title.Color = theme.Color(theme.ColorNameForeground)
+			}
+
+			// 未读闪烁红点
+			prefix := ""
+			if r.unread > 0 {
+				if blink {
+					prefix = fmt.Sprintf("🔴%d ", r.unread)
+				} else {
+					prefix = fmt.Sprintf("⭕%d ", r.unread)
+				}
+			}
+			suffix := ""
+			if r.isPeer && !r.online {
+				suffix = "（离线）"
+			}
+			title.Text = prefix + name + suffix
+			sub.Text = r.sub
+			circle.Refresh()
+			initial.Refresh()
+			title.Refresh()
+			sub.Refresh()
 		},
 	)
 	g.peersList.OnSelected = func(id widget.ListItemID) {
@@ -270,10 +369,13 @@ func (g *gui) refreshMe() {
 func (g *gui) leftColumn() fyne.CanvasObject {
 	me := container.NewBorder(nil, nil, g.meAvatar, nil, g.meName)
 
+	refreshBtn := widget.NewButtonWithIcon("刷新", theme.ViewRefreshIcon(), func() {
+		g.app.Disc.Refresh()
+	})
 	settingsBtn := widget.NewButtonWithIcon("设置", theme.SettingsIcon(), g.showSettings)
 	themeBtn := widget.NewButtonWithIcon("主题", theme.ColorPaletteIcon(), g.toggleTheme)
 	newGroup := widget.NewButtonWithIcon("建群", theme.ContentAddIcon(), g.newGroup)
-	tools := container.NewGridWithColumns(3, settingsBtn, themeBtn, newGroup)
+	tools := container.NewGridWithColumns(4, refreshBtn, settingsBtn, themeBtn, newGroup)
 
 	width := canvas.NewRectangle(color.Transparent)
 	width.SetMinSize(fyne.NewSize(240, 1))
@@ -306,7 +408,9 @@ func (g *gui) middleColumn() fyne.CanvasObject {
 
 	chatArea := container.NewStack(g.chatBg, g.msgScroll)
 
-	top := container.NewVBox(g.chatTitle, widget.NewSeparator())
+	histBtn := widget.NewButtonWithIcon("历史记录", theme.FileTextIcon(), g.viewHistory)
+	titleRow := container.NewBorder(nil, nil, nil, histBtn, g.chatTitle)
+	top := container.NewVBox(titleRow, widget.NewSeparator())
 	bottom := container.NewVBox(widget.NewSeparator(), input, g.statusLabel)
 	return container.NewBorder(top, bottom, nil, nil, chatArea)
 }
@@ -375,7 +479,10 @@ func (g *gui) openConv(key, title string) {
 	g.mu.Lock()
 	g.curKey, g.curTitle = key, title
 	msgs := append([]msgItem(nil), g.convs[key]...)
+	delete(g.unread, key) // 打开会话即清零未读
 	g.mu.Unlock()
+	g.rebuildLeftRows()
+	g.peersList.Refresh()
 
 	g.chatTitle.SetText(title)
 	g.msgBox.Objects = nil
@@ -387,7 +494,8 @@ func (g *gui) openConv(key, title string) {
 	g.updateInfo()
 }
 
-// appendMsg 追加消息到会话，如为当前会话则实时渲染
+// appendMsg 追加消息到会话，如为当前会话则实时渲染；
+// 非当前会话收到对方消息时累计未读（由闪烁定时器提示），不再强制切换会话。
 func (g *gui) appendMsg(key string, m msgItem) {
 	g.mu.Lock()
 	g.convs[key] = append(g.convs[key], m)
@@ -395,6 +503,13 @@ func (g *gui) appendMsg(key string, m msgItem) {
 		g.convs[key] = g.convs[key][n-500:]
 	}
 	cur := g.curKey == key
+	if !cur && !m.mine {
+		if g.unread == nil {
+			g.unread = make(map[string]int)
+		}
+		g.unread[key]++
+	}
+	g.histDirty = true // 内存会话已变更，标记落盘
 	g.mu.Unlock()
 
 	fyne.Do(func() {
@@ -402,8 +517,13 @@ func (g *gui) appendMsg(key string, m msgItem) {
 			g.msgBox.Add(bubble(m, g.set.Dark))
 			g.msgBox.Refresh()
 			g.msgScroll.ScrollToBottom()
-		} else {
+		} else if m.mine {
+			// 自己发出的消息（如群发回显）切到对应会话
 			g.openConvByKey(key)
+		} else {
+			// 对方消息：仅刷新左栏未读红点，不打断当前会话
+			g.rebuildLeftRows()
+			g.peersList.Refresh()
 		}
 	})
 }
@@ -428,6 +548,7 @@ func bubble(m msgItem, dark bool) fyne.CanvasObject {
 	meta.TextSize = 11
 
 	lbl := widget.NewLabel(softWrap(m.text, 52))
+	lbl.Selectable = true // 允许在聊天气泡中选择并复制文本
 	bg := canvas.NewRectangle(bubbleColor(dark, m.mine))
 	bg.CornerRadius = 10
 	body := container.NewStack(bg, lbl)
@@ -522,6 +643,20 @@ func (g *gui) updateInfo() {
 			g.editRemark(pid)
 		})
 		g.infoBox.Add(remarkBtn)
+		delBtn := widget.NewButtonWithIcon("删除此设备", theme.DeleteIcon(), func() {
+			g.app.RemovePeer(pid)
+			g.mu.Lock()
+			delete(g.convs, pid)
+			if g.curKey == pid {
+				g.curKey = broadcastKey
+				g.curTitle = "广播"
+			}
+			g.mu.Unlock()
+			g.refreshPeersNow()
+			g.openConvByKey(g.curKey)
+		})
+		delBtn.Importance = widget.DangerImportance
+		g.infoBox.Add(delBtn)
 	default:
 		addRow("提示", "在左侧选择一个用户查看资料")
 	}
@@ -780,6 +915,28 @@ func (g *gui) start() {
 	go func() {
 		tk := time.NewTicker(800 * time.Millisecond)
 		for range tk.C {
+			// 未读红点闪烁：有未读时每个周期翻转显隐
+			g.mu.Lock()
+			has := false
+			for _, n := range g.unread {
+				if n > 0 {
+					has = true
+					break
+				}
+			}
+			if has {
+				g.blinkOn = !g.blinkOn
+			} else {
+				g.blinkOn = false
+			}
+			dirty := g.histDirty
+			g.histDirty = false
+			g.mu.Unlock()
+
+			// 会话有变更则落盘（退出前兜底，避免丢失历史）
+			if dirty {
+				g.saveHistory()
+			}
 			g.refreshPeers()
 			g.refreshTasks()
 		}
@@ -818,11 +975,12 @@ func (g *gui) rebuildLeftRows() {
 	sort.Strings(names)
 
 	g.mu.Lock()
-	rows := []leftRow{{key: broadcastKey, title: "📢 广播", sub: "所有在线用户"}}
+	rows := []leftRow{{key: broadcastKey, title: "广播", sub: "所有在线用户", unread: g.unread[broadcastKey]}}
 	for _, n := range names {
 		rows = append(rows, leftRow{
-			key: groupPrefix + n, title: "👥 " + n,
-			sub: fmt.Sprintf("%d 名成员", len(groups[n])),
+			key: groupPrefix + n, title: n,
+			sub:    fmt.Sprintf("%d 名成员", len(groups[n])),
+			unread: g.unread[groupPrefix+n],
 		})
 	}
 	for _, p := range g.peers {
@@ -830,13 +988,24 @@ func (g *gui) rebuildLeftRows() {
 		if g.set.HideIP {
 			sub = "在线设备"
 		}
+		if !p.Online {
+			sub = "离线 · 可发离线消息"
+		}
 		rows = append(rows, leftRow{
 			key: p.ID, title: g.display(p), sub: sub,
-			online: p.Online, isPeer: true,
+			online: p.Online, isPeer: true, unread: g.unread[p.ID],
 		})
 	}
 	g.leftRows = rows
 	g.mu.Unlock()
+}
+
+// firstRune 取字符串首字符（用于头像展示）
+func firstRune(s string) string {
+	for _, r := range s {
+		return string(r)
+	}
+	return "?"
 }
 
 // filterPeers 按设置的网段过滤节点
@@ -934,7 +1103,9 @@ func (g *gui) sendCurrent() {
 	default:
 		if err := g.app.Chat.SendText(ctx, key, text); err != nil {
 			if errors.Is(err, chat.ErrPeerOffline) {
-				g.note("对方离线，消息已进入离线队列")
+				g.note("对方离线，消息已进入离线队列，上线后自动送达")
+				// 本地回显离线暂存消息，让用户看到已发出的内容
+				g.appendMsg(key, msgItem{sender: "我", text: "[离线暂存] " + text, ts: time.Now().UnixMilli(), mine: true})
 			} else {
 				g.note("发送失败: " + err.Error())
 			}
@@ -1203,6 +1374,88 @@ func msgKey(m chat.Message) string {
 		return m.To
 	}
 	return m.From
+}
+
+// convTitle 根据会话 key 推导显示标题（历史浏览等场景使用）
+func (g *gui) convTitle(key string) string {
+	switch {
+	case key == broadcastKey:
+		return "广播"
+	case strings.HasPrefix(key, groupPrefix):
+		return "群:" + key[len(groupPrefix):]
+	default:
+		return g.peerName(key)
+	}
+}
+
+// truncate 截断字符串到 n 个 rune（用于历史列表预览）
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// viewHistory 弹出历史消息浏览窗口：左侧会话列表，右侧完整消息气泡
+func (g *gui) viewHistory() {
+	g.mu.Lock()
+	keys := make([]string, 0, len(g.convs))
+	for k := range g.convs {
+		keys = append(keys, k)
+	}
+	g.mu.Unlock()
+	sort.Strings(keys)
+
+	msgView := container.NewVBox()
+	scroll := container.NewVScroll(msgView)
+	scroll.SetMinSize(fyne.NewSize(540, 440))
+
+	list := widget.NewList(
+		func() int { return len(keys) },
+		func() fyne.CanvasObject {
+			title := widget.NewLabelWithStyle("会话", fyne.TextAlignLeading, fyne.TextStyle{Bold: true})
+			prev := widget.NewLabel("")
+			prev.Wrapping = fyne.TextWrapWord
+			return container.NewVBox(title, prev)
+		},
+		func(id widget.ListItemID, o fyne.CanvasObject) {
+			k := keys[id]
+			box := o.(*fyne.Container)
+			title := box.Objects[0].(*widget.Label)
+			prev := box.Objects[1].(*widget.Label)
+			g.mu.Lock()
+			msgs := g.convs[k]
+			g.mu.Unlock()
+			title.SetText(g.convTitle(k))
+			if len(msgs) > 0 {
+				last := msgs[len(msgs)-1]
+				prev.SetText(fmt.Sprintf("[%s] %s", ts(last.ts), truncate(last.text, 28)))
+			} else {
+				prev.SetText("（无消息）")
+			}
+			title.Refresh()
+			prev.Refresh()
+		},
+	)
+	list.OnSelected = func(id widget.ListItemID) {
+		k := keys[id]
+		g.mu.Lock()
+		msgs := append([]msgItem(nil), g.convs[k]...)
+		g.mu.Unlock()
+		msgView.Objects = nil
+		for _, m := range msgs {
+			msgView.Add(bubble(m, g.set.Dark))
+		}
+		msgView.Refresh()
+		scroll.ScrollToTop()
+	}
+
+	content := container.NewHSplit(container.NewVScroll(list), scroll)
+	content.SetOffset(0.32)
+	d := dialog.NewCustom("历史消息", "关闭", content, g.win)
+	d.Resize(fyne.NewSize(920, 540))
+	d.Show()
 }
 
 func ts(ms int64) string { return time.UnixMilli(ms).Format("15:04:05") }

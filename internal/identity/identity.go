@@ -20,6 +20,8 @@ type Identity struct {
 	Pub  ed25519.PublicKey
 	priv ed25519.PrivateKey
 
+	path string // identity.json 路径，用于昵称落盘
+
 	mu   sync.RWMutex
 	name string
 }
@@ -31,16 +33,32 @@ func (i *Identity) Name() string {
 	return i.name
 }
 
-// SetName 运行时修改显示昵称（线程安全，下次心跳广播生效）
+// SetName 运行时修改显示昵称（线程安全，下次心跳广播生效），并持久化到磁盘
 func (i *Identity) SetName(n string) {
 	i.mu.Lock()
 	i.name = n
+	path := i.path
 	i.mu.Unlock()
+
+	if path == "" {
+		return
+	}
+	// 读回现有密钥文件再写入昵称，避免覆盖公私钥
+	if b, err := os.ReadFile(path); err == nil {
+		var kf keyFile
+		if json.Unmarshal(b, &kf) == nil {
+			kf.Name = n
+			if out, err := json.MarshalIndent(kf, "", "  "); err == nil {
+				_ = os.WriteFile(path, out, 0o600)
+			}
+		}
+	}
 }
 
 type keyFile struct {
 	Pub  string `json:"pub"`
 	Priv string `json:"priv"`
+	Name string `json:"name"`
 }
 
 // IDFromPub 由公钥推导节点 ID
@@ -67,19 +85,24 @@ func LoadOrCreate(dataDir, name string) (*Identity, error) {
 			len(pub) != ed25519.PublicKeySize || len(priv) != ed25519.PrivateKeySize {
 			return nil, fmt.Errorf("identity: 密钥文件损坏，请删除 %s 后重新生成", path)
 		}
-		return &Identity{ID: IDFromPub(pub), name: name, Pub: pub, priv: priv}, nil
+		// 优先使用已保存的昵称，仅当它为空时回退到默认（主机名）
+		savedName := kf.Name
+		if savedName == "" {
+			savedName = name
+		}
+		return &Identity{ID: IDFromPub(pub), name: savedName, Pub: pub, priv: priv, path: path}, nil
 	}
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("identity: 生成密钥失败: %w", err)
 	}
-	kf := keyFile{Pub: hex.EncodeToString(pub), Priv: hex.EncodeToString(priv)}
+	kf := keyFile{Pub: hex.EncodeToString(pub), Priv: hex.EncodeToString(priv), Name: name}
 	b, _ := json.MarshalIndent(kf, "", "  ")
 	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return nil, fmt.Errorf("identity: 保存密钥失败: %w", err)
 	}
-	return &Identity{ID: IDFromPub(pub), name: name, Pub: pub, priv: priv}, nil
+	return &Identity{ID: IDFromPub(pub), name: name, Pub: pub, priv: priv, path: path}, nil
 }
 
 // Sign 用本机私钥签名

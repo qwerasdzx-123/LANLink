@@ -246,9 +246,23 @@ func (d *Discovery) reapLoop(ctx context.Context) {
 	}
 }
 
+// RemovePeer 从节点表中删除指定设备（用于用户手动移除旧设备记录）
+func (d *Discovery) RemovePeer(id string) {
+	d.mu.Lock()
+	delete(d.peers, id)
+	d.mu.Unlock()
+}
+
+// Refresh 立即触发一次上线通告广播，用于手动刷新设备列表。
+// 注意：必须用 TOnline（而非 THeartbeat），因为收到 TOnline 的对端会回
+// ONLINE_ACK 自我通报，这样本节点才能重新学习到对方；HEARTBEAT 不会触发回包。
+func (d *Discovery) Refresh() {
+	d.broadcastAnnounce(protocol.TOnline)
+}
+
 // ── 查询接口 ────────────────────────────────────────────────
 
-// Peers 按名称排序的节点快照
+// Peers 按名称排序的节点快照（含在线和离线设备）
 func (d *Discovery) Peers() []Peer {
 	d.mu.RLock()
 	defer d.mu.RUnlock()

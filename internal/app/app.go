@@ -110,6 +110,11 @@ func (a *App) Stop() {
 	}
 }
 
+// RemovePeer 从发现表中删除指定设备
+func (a *App) RemovePeer(id string) {
+	a.Disc.RemovePeer(id)
+}
+
 // Summary 启动摘要
 func (a *App) Summary() string {
 	return fmt.Sprintf("节点 %s (%s)  UDP:%d  TCP:%d  下载目录: %s",
