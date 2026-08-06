@@ -17,3 +17,6 @@ lanlink-data/
 # Android 构建产物（体积大，按需通过 Release 分发，不入库）
 *.apk
 build-android.log
+
+# 本地使用说明文档（仅本地参考，不入库，供下轮对话直接读取）
+GO_ENV_GUIDE.md
